@@ -1,0 +1,22 @@
+﻿# Python virtual environment and cache
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local environment and editor files
+.env
+.vscode/
+
+# Local database and biometric outputs
+visitors.db
+visitors.db-shm
+visitors.db-wal
+logs/events.log
+logs/entries/
+logs/exits/
+logs/registered_faces/
+
+# Local test video and downloaded model files can be large.
+# Uncomment these if you do not want to commit them:
+# data/*.mp4
+# models/*.pt

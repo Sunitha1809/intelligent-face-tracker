@@ -1,0 +1,19 @@
+﻿flowchart TD
+    A[Video input: sample.mp4] --> B[OpenCV frame reader]
+    B --> C[YOLO face detector]
+    C --> D[ByteTrack object tracker]
+    D --> E[Face crop and InsightFace ArcFace embedding]
+    E --> F{Match stored embedding?}
+    F -->|Yes| G[Reuse visitor ID]
+    F -->|No| H[Register visitor in SQLite]
+    G --> I[Virtual line crossing logic]
+    H --> I
+    I --> J{Crossing direction}
+    J -->|Left to right| K[ENTRY event]
+    J -->|Right to left| L[EXIT event]
+    K --> M[Save face crop and event in SQLite]
+    L --> M
+    H --> N[Save registered face image]
+    M --> O[Write logs/events.log]
+    N --> O
+    O --> P[Display video and counters]
