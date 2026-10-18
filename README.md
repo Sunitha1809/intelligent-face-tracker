@@ -119,10 +119,12 @@ Run the syntax checks and the application with sample footage before submission.
 
 ## Demo
 
-Demo video: TODO — add your Loom or YouTube link.
+Demo video: Pending — demo video will be added after recording and upload.
 
 ## Submission
 
-GitHub repository: TODO — add your public repository URL.
+GitHub repository: https://github.com/Sunitha1809/intelligent-face-tracker
 
 This project is a part of a hackathon run by https://katomaran.com
+
+
