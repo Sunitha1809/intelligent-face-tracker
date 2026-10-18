@@ -1,0 +1,6 @@
+﻿ultralytics==8.4.179
+insightface==2.1
+onnxruntime==1.31.0
+opencv-python==5.0.0.93
+numpy==2.4.6
+PyYAML==6.0.3
