@@ -66,7 +66,7 @@ Install the project dependencies:
 
 ```powershell
 python -m pip install --upgrade pip
-python -m pip install ultralytics opencv-python insightface onnxruntime numpy
+python -m pip install -r requirements.txt
 ```
 
 Install a compatible PyTorch build if it is not already installed. For CPU-only systems, use the official PyTorch installation instructions: https://pytorch.org/get-started/locally/

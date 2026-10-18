@@ -61,3 +61,19 @@ The sample-video run has not yet demonstrated an EXIT event. This should be trea
 ## Responsible use
 
 Face embeddings and face crops are sensitive biometric information. Obtain appropriate consent, limit access, protect stored data, and define a retention policy before any real-world deployment.
+
+## Compute-load estimates
+
+The application uses YOLO for face detection, ByteTrack for tracking, and InsightFace/ArcFace for face embeddings.
+
+| Resource | Expected workload |
+|---|---|
+| CPU-only | Supports development and testing, but processing may be slow because face detection and embedding generation are computationally intensive. |
+| GPU-accelerated | A compatible GPU can accelerate model inference and may improve processing speed, particularly at higher video resolutions. |
+| Memory | RAM is needed for video frames, model weights, face embeddings, and application data. Actual usage depends on the model and workload. |
+| Video resolution | The sample video is 2688 × 1520 pixels at approximately 25 FPS. Processing high-resolution frames increases computational demand. |
+| Frame skipping | The `frame_skip` setting in `config.json` controls how many frames are skipped between processing cycles. Increasing it can reduce workload but may miss short-lived detections or crossings. |
+
+**Current development environment:** The application has been tested with CPU-based PyTorch and ONNX Runtime. GPU performance has not been benchmarked.
+
+**Performance limitations:** Actual FPS, memory consumption, CPU utilization, and GPU utilization have not yet been measured. These should be benchmarked on the target hardware before making real-time performance claims.
