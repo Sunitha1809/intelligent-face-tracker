@@ -1,9 +1,7 @@
-
 import cv2
 import json
 import logging
 import sqlite3
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -43,6 +41,7 @@ logging.basicConfig(
     force=True,
 )
 
+
 def log_event(message):
     logging.info(message)
     print(message)
@@ -69,6 +68,7 @@ log_event(f"SYSTEM_START | frame_skip={FRAME_SKIP}")
 
 def connect_db():
     connection = sqlite3.connect(str(DB_PATH))
+
     connection.execute("""
         CREATE TABLE IF NOT EXISTS visitors (
             visitor_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,6 +77,7 @@ def connect_db():
             first_seen TEXT
         )
     """)
+
     connection.execute("""
         CREATE TABLE IF NOT EXISTS visitor_events (
             event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,6 +88,7 @@ def connect_db():
             track_id TEXT
         )
     """)
+
     connection.commit()
     return connection
 
@@ -99,6 +101,7 @@ db = connect_db()
 def cosine_similarity(a, b):
     a = np.asarray(a, dtype=np.float32)
     b = np.asarray(b, dtype=np.float32)
+
     denominator = np.linalg.norm(a) * np.linalg.norm(b)
 
     if denominator == 0:
@@ -129,6 +132,7 @@ def find_or_register_visitor(embedding, face_crop):
             best_score = score
             best_id = visitor_id
 
+    # Reuse an existing visitor ID if the embedding matches.
     if best_id is not None and best_score >= SIMILARITY_THRESHOLD:
         log_event(
             f"RECOGNITION | visitor=V{best_id} | "
@@ -136,30 +140,45 @@ def find_or_register_visitor(embedding, face_crop):
         )
         return best_id
 
+    # Register a new visitor when no suitable match exists.
     now = datetime.now().astimezone().isoformat(timespec="seconds")
+
     cursor = db.execute(
         """
         INSERT INTO visitors (embedding, image_path, first_seen)
         VALUES (?, ?, ?)
         """,
-        (json.dumps(np.asarray(embedding).tolist()), "", now),
+        (
+            json.dumps(np.asarray(embedding).tolist()),
+            "",
+            now,
+        ),
     )
-    visitor_id = cursor.lastrowid
 
+    visitor_id = cursor.lastrowid
     image_path = REGISTERED_DIR / f"visitor_{visitor_id}.jpg"
+
     if face_crop is not None and face_crop.size:
-        cv2.imwrite(str(image_path), face_crop)
+        image_saved = cv2.imwrite(str(image_path), face_crop)
+
+        if not image_saved:
+            log_event(
+                f"WARNING | Could not save registered face "
+                f"for visitor=V{visitor_id}"
+            )
 
     db.execute(
         "UPDATE visitors SET image_path = ? WHERE visitor_id = ?",
         (str(image_path.relative_to(BASE_DIR)), visitor_id),
     )
+
     db.commit()
 
     log_event(
         f"REGISTRATION | visitor=V{visitor_id} | "
         f"image={image_path.relative_to(BASE_DIR)}"
     )
+
     return visitor_id
 
 
@@ -172,8 +191,11 @@ def save_event(visitor_id, event_type, track_id, face_crop):
 
     if event_type == "ENTRY":
         folder = ENTRY_DIR / date_folder
-    else:
+    elif event_type == "EXIT":
         folder = EXIT_DIR / date_folder
+    else:
+        log_event(f"WARNING | Invalid event type: {event_type}")
+        return
 
     folder.mkdir(parents=True, exist_ok=True)
 
@@ -181,12 +203,18 @@ def save_event(visitor_id, event_type, track_id, face_crop):
         f"{now.strftime('%H%M%S_%f')}_"
         f"V{visitor_id}_{event_type.lower()}.jpg"
     )
-    image_path = folder / filename
 
+    image_path = folder / filename
     saved_path = ""
+
     if face_crop is not None and face_crop.size:
         if cv2.imwrite(str(image_path), face_crop):
             saved_path = str(image_path.relative_to(BASE_DIR))
+        else:
+            log_event(
+                f"WARNING | Could not save event image "
+                f"for visitor=V{visitor_id}"
+            )
 
     db.execute(
         """
@@ -194,8 +222,15 @@ def save_event(visitor_id, event_type, track_id, face_crop):
             (visitor_id, event_type, event_time, image_path, track_id)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (visitor_id, event_type, timestamp, saved_path, str(track_id)),
+        (
+            visitor_id,
+            event_type,
+            timestamp,
+            saved_path,
+            str(track_id),
+        ),
     )
+
     db.commit()
 
     log_event(
@@ -219,10 +254,12 @@ log_event("MODEL_LOAD | Loading InsightFace buffalo_l on CPU")
 recognizer = FaceAnalysis(name="buffalo_l")
 recognizer.prepare(ctx_id=-1, det_size=(640, 640))
 
-# Maps temporary tracker IDs to visitor database IDs.
+
+# Temporary tracker IDs mapped to persistent visitor IDs.
 track_to_visitor = {}
 previous_positions = {}
 last_event_direction = {}
+
 frame_number = 0
 processed_frames = 0
 
@@ -236,11 +273,14 @@ if not cap.isOpened():
     raise RuntimeError(f"Could not open video: {VIDEO_PATH}")
 
 video_fps = cap.get(cv2.CAP_PROP_FPS)
+
 if not video_fps or video_fps <= 0:
     video_fps = 25.0
 
 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+# Vertical line used to determine entry and exit.
 line_x = int(width * LINE_POSITION_RATIO)
 
 log_event(
@@ -252,15 +292,17 @@ print("\nStarting visitor event tracking.")
 print("Move across the vertical line to demonstrate ENTRY or EXIT.")
 print("Press Q in the video window to stop early.\n")
 
+
 try:
     while True:
         ok, frame = cap.read()
+
         if not ok:
             break
 
         frame_number += 1
 
-        # Keep the last known tracking position on skipped frames.
+        # Skip frames according to config.json.
         if FRAME_SKIP > 0 and frame_number % (FRAME_SKIP + 1) != 1:
             continue
 
@@ -275,22 +317,32 @@ try:
             verbose=False,
         )[0]
 
-        # InsightFace supplies face embeddings.
+        # InsightFace face detection and embedding generation.
         detected_faces = recognizer.get(frame)
 
         face_info = []
+
         for face in detected_faces:
             box = face.bbox.astype(int)
-            x1, y1, x2, y2 = box.tolist()
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(width, x2), min(height, y2)
+            fx1, fy1, fx2, fy2 = box.tolist()
 
-            if x2 <= x1 or y2 <= y1:
+            fx1 = max(0, fx1)
+            fy1 = max(0, fy1)
+            fx2 = min(width, fx2)
+            fy2 = min(height, fy2)
+
+            if fx2 <= fx1 or fy2 <= fy1:
                 continue
 
-            crop = frame[y1:y2, x1:x2].copy()
-            center = ((x1 + x2) // 2, (y1 + y2) // 2)
-            face_info.append((center, face.embedding, crop, box))
+            crop = frame[fy1:fy2, fx1:fx2].copy()
+            face_center = (
+                (fx1 + fx2) // 2,
+                (fy1 + fy2) // 2,
+            )
+
+            face_info.append(
+                (face_center, face.embedding, crop, box)
+            )
 
         boxes = result.boxes
         current_tracks = []
@@ -301,21 +353,32 @@ try:
 
             for coords, track_id in zip(coordinates, track_ids):
                 x1, y1, x2, y2 = coords.tolist()
-                x1, y1 = max(0, x1), max(0, y1)
-                x2, y2 = min(width, x2), min(height, y2)
+
+                x1 = max(0, x1)
+                y1 = max(0, y1)
+                x2 = min(width, x2)
+                y2 = min(height, y2)
 
                 if x2 <= x1 or y2 <= y1:
                     continue
 
-                center = ((x1 + x2) // 2, (y1 + y2) // 2)
-                track_crop = frame[y1:y2, x1:x2].copy()
+                center = (
+                    (x1 + x2) // 2,
+                    (y1 + y2) // 2,
+                )
 
-                # Associate the YOLO track with the nearest InsightFace face.
+                # Default to the current YOLO face box.
+                # This is the safe fallback for event images.
+                track_crop = frame[y1:y2, x1:x2].copy()
+                event_crop = track_crop
+
+                # Find the nearest InsightFace detection.
                 best_face = None
                 best_distance = float("inf")
 
                 for info in face_info:
                     face_center = info[0]
+
                     distance = (
                         (center[0] - face_center[0]) ** 2
                         + (center[1] - face_center[1]) ** 2
@@ -327,27 +390,38 @@ try:
 
                 visitor_id = track_to_visitor.get(int(track_id))
 
-                if best_face is not None and best_distance <= MATCH_DISTANCE:
+                if (
+                    best_face is not None
+                    and best_distance <= MATCH_DISTANCE
+                ):
                     embedding = best_face[1]
                     face_crop = best_face[2]
+
+                    # Prefer the current InsightFace crop.
+                    event_crop = face_crop
 
                     if visitor_id is None:
                         log_event(
                             f"EMBEDDING | track={track_id} | "
                             f"dimensions={len(embedding)}"
                         )
+
                         visitor_id = find_or_register_visitor(
-                            embedding, face_crop
+                            embedding,
+                            face_crop,
                         )
+
                         track_to_visitor[int(track_id)] = visitor_id
 
                 if visitor_id is None:
-                    # Wait until a usable face embedding is available.
                     label = f"Track {track_id} | face pending"
-                else:
-                    label = f"Visitor V{visitor_id} | Track {track_id}"
 
-                    # Detect crossing of the virtual vertical boundary.
+                else:
+                    label = (
+                        f"Visitor V{visitor_id} | Track {track_id}"
+                    )
+
+                    # Detect movement across the virtual line.
                     previous_x = previous_positions.get(int(track_id))
                     current_x = int(center[0])
                     direction = None
@@ -355,27 +429,33 @@ try:
                     if previous_x is not None:
                         if previous_x < line_x <= current_x:
                             direction = "ENTRY"
+
                         elif previous_x >= line_x > current_x:
                             direction = "EXIT"
 
-                    debug_message = (
+                    log_event(
                         f"DEBUG_CROSSING | track={track_id} | "
-                        f"visitor={visitor_id} | previous_x={previous_x} | "
-                        f"current_x={current_x} | line_x={line_x} | "
-                        f"direction={direction}"
+                        f"visitor={visitor_id} | "
+                        f"previous_x={previous_x} | "
+                        f"current_x={current_x} | "
+                        f"line_x={line_x} | direction={direction}"
                     )
-                    log_event(debug_message)
-                    print(debug_message)
 
                     if direction is not None:
-                        previous_direction = last_event_direction.get(int(track_id))
+                        previous_direction = last_event_direction.get(
+                            int(track_id)
+                        )
+
+                        # Prevent repeating the same direction event
+                        # for this tracker until the opposite direction.
                         if previous_direction != direction:
                             save_event(
                                 visitor_id,
                                 direction,
                                 int(track_id),
-                                track_crop,
+                                event_crop,
                             )
+
                             last_event_direction[int(track_id)] = direction
 
                     previous_positions[int(track_id)] = current_x
@@ -387,14 +467,27 @@ try:
                     f"visitor={visitor_id if visitor_id is not None else 'pending'}"
                 )
 
-        # Draw the virtual line and tracking labels.
+        # Draw the virtual line.
         cv2.line(
-            frame, (line_x, 0), (line_x, height), (255, 200, 0), 2
+            frame,
+            (line_x, 0),
+            (line_x, height),
+            (255, 200, 0),
+            2,
         )
 
+        # Draw face boxes and visitor labels.
         for coords, label in current_tracks:
             x1, y1, x2, y2 = coords.tolist()
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+            cv2.rectangle(
+                frame,
+                (x1, y1),
+                (x2, y2),
+                (0, 255, 0),
+                2,
+            )
+
             cv2.putText(
                 frame,
                 label,
@@ -405,16 +498,19 @@ try:
                 2,
             )
 
+        # Display counts from the database.
         unique_visitors = db.execute(
             "SELECT COUNT(*) FROM visitors"
         ).fetchone()[0]
 
         entry_count = db.execute(
-            "SELECT COUNT(*) FROM visitor_events WHERE event_type='ENTRY'"
+            "SELECT COUNT(*) FROM visitor_events "
+            "WHERE event_type = 'ENTRY'"
         ).fetchone()[0]
 
         exit_count = db.execute(
-            "SELECT COUNT(*) FROM visitor_events WHERE event_type='EXIT'"
+            "SELECT COUNT(*) FROM visitor_events "
+            "WHERE event_type = 'EXIT'"
         ).fetchone()[0]
 
         cv2.putText(
@@ -426,6 +522,7 @@ try:
             (0, 255, 255),
             2,
         )
+
         cv2.putText(
             frame,
             f"Entries: {entry_count}  Exits: {exit_count}",
@@ -436,7 +533,10 @@ try:
             2,
         )
 
-        cv2.imshow("Intelligent Face Tracker - Visitor Events", frame)
+        cv2.imshow(
+            "Intelligent Face Tracker - Visitor Events",
+            frame,
+        )
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
             log_event("VIDEO_STOP | stopped by user")
@@ -454,11 +554,15 @@ finally:
     final_visitors = db.execute(
         "SELECT COUNT(*) FROM visitors"
     ).fetchone()[0]
+
     final_entries = db.execute(
-        "SELECT COUNT(*) FROM visitor_events WHERE event_type='ENTRY'"
+        "SELECT COUNT(*) FROM visitor_events "
+        "WHERE event_type = 'ENTRY'"
     ).fetchone()[0]
+
     final_exits = db.execute(
-        "SELECT COUNT(*) FROM visitor_events WHERE event_type='EXIT'"
+        "SELECT COUNT(*) FROM visitor_events "
+        "WHERE event_type = 'EXIT'"
     ).fetchone()[0]
 
     print("\n---------- FINAL SUMMARY ----------")
