@@ -119,7 +119,7 @@ Run the syntax checks and the application with sample footage before submission.
 
 ## Demo
 
-Demo video: Pending — demo video will be added after recording and upload.
+Demo video: [Watch the Intelligent Face Tracker demo on YouTube](https://youtu.be/imr8d3FezAg)
 
 ## Submission
 
